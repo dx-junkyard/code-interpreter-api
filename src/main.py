@@ -148,4 +148,4 @@ def chat_service(thread_id, user_id, message):
         else:
             time.sleep(5)
 
-    return {"message": result, "thread_id": thread_id, "file_id": file_id}
+    return {"message": result, "file_id": file_id}

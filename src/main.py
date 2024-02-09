@@ -79,16 +79,18 @@ def download_file(
         raise HTTPException(status_code=500, detail="Undefined error")
 
 
-@app.delete("/delete/{thread_id}")
-def delete_thread(
-        thread_id: str,
+@app.delete("/delete/{user_id}")
+def delete_session(
+        user_id: str,
 ):
+    thread_id = user_database[user_id]
+
     # If the user_id is not in the database, create a new thread
     try:
         print(client.beta.threads.delete(thread_id))
         result = "Thread deleted."
-        if thread_id in user_database:
-            user_database.pop(thread_id)
+        if user_id in user_database:
+            user_database.pop(user_id)
         else:
             print("Thread not found in database.")
     except Exception as e:

@@ -97,7 +97,7 @@ def delete_session(
         print(e)
         result = "Failed to delete thread."
 
-    return {"message": result, "thread_id": thread_id}
+    return {"message": result}
 
 
 def chat_service(thread_id, user_id, message):

@@ -2,15 +2,14 @@ import json
 import os
 import time
 import tomllib
-import uuid
 from datetime import datetime
 from logging import getLogger
 from typing import Annotated
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, Form, HTTPException, BackgroundTasks
+from fastapi import FastAPI, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, FileResponse
+from fastapi.responses import StreamingResponse
 from openai import AzureOpenAI
 
 logger = getLogger("uvicorn.app")
@@ -102,7 +101,7 @@ def chat_with_file(
     )
 
     # If the user_id is not in the database, create a new thread
-    if user_id not in user_database :
+    if user_id not in user_database:
         user_database[user_id] = client.beta.threads.create().id
     # If the user_id is in the database and is the first message,
     # delete the thread and create a new thread

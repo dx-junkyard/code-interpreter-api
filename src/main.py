@@ -1,11 +1,15 @@
 import os
 import time
+import tomllib
 from datetime import datetime
+from logging import getLogger
 from typing import Annotated
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Response, File, Form, HTTPException
 from openai import AzureOpenAI
+
+logger = getLogger("uvicorn.app")
 
 load_dotenv()
 
@@ -15,7 +19,16 @@ api_endpoint = os.getenv("OPENAI_URI")
 api_key = os.getenv("OPENAI_KEY")
 api_version = os.getenv("OPENAI_VERSION")
 api_deployment_name = os.getenv("OPENAI_GPT_DEPLOYMENT")
-api_assistant_id = os.getenv("OPENAI_GPT_ASSISTANT_ID")
+
+# pyproject.tomlファイルのパス
+file_path = 'pyproject.toml'
+
+# tomlファイルを読み込む
+with open(file_path, 'rb') as toml_file:
+    data = tomllib.load(toml_file)
+
+# バージョン情報を取得
+version = data['tool']['poetry']['version']
 
 client = AzureOpenAI(
     api_key=api_key,
@@ -23,19 +36,34 @@ client = AzureOpenAI(
     azure_endpoint=api_endpoint,
 )
 
+assistant = client.beta.assistants.create(
+    name="Opendata Bridge",
+    instructions="You are a specialist in extracting tables from various files such as PDF/Excel/csv and converting them into csv files.",
+    tools=[
+        {"type": "code_interpreter"}
+    ],
+    model=api_deployment_name,
+)
+
 user_database = {}
 
 
 @app.post("/chat")
 def chat(
-        message: str,
-        user_id: str,
+        message: Annotated[str, Form()],
+        user_id: Annotated[str, Form()]
 ):
     # If the user_id is not in the database, create a new thread
     if user_id not in user_database:
         user_database[user_id] = client.beta.threads.create().id
 
     thread_id = user_database[user_id]
+
+    client.beta.threads.messages.create(
+        thread_id=thread_id,
+        role="user",
+        content=message)
+
     return chat_service(thread_id, user_id, message)
 
 
@@ -75,7 +103,7 @@ def download_file(
         return Response(content=file_data_bytes)
     except Exception as e:
         # エラーが発生した場合500エラーを返す
-        print(e)
+        logger.error(e)
         raise HTTPException(status_code=500, detail="Undefined error")
 
 
@@ -87,14 +115,14 @@ def delete_session(
 
     # If the user_id is not in the database, create a new thread
     try:
-        print(client.beta.threads.delete(thread_id))
+        logger.info(client.beta.threads.delete(thread_id))
         result = "Thread deleted."
         if user_id in user_database:
             user_database.pop(user_id)
         else:
-            print("Thread not found in database.")
+            logger.info("Thread not found in database.")
     except Exception as e:
-        print(e)
+        logger.error(e)
         result = "Failed to delete thread."
 
     return {"message": result}
@@ -103,14 +131,16 @@ def delete_session(
 def chat_service(thread_id, user_id, message):
     run = client.beta.threads.runs.create(
         thread_id=thread_id,
-        assistant_id=api_assistant_id,
-        instructions=f"Please address the user as {user_id}."
-                     + "The user has a premium account. "
+        assistant_id=assistant.id,
+        instructions=f"Please address the user as '{user_id}'."
+                     # 一番最初のメッセージにはシステムバージョンを含めることを指示する
+                     + "Please include the system version in the first message. "
+                     + f"Your system version : {version}. "
                      + "Be assertive, accurate, and polite. "
                      + "Ask if the user has further questions. "
-                     + "The current date and time is: "
-                     + datetime.now().strftime("%x %X")
-                     + ". ",
+                     + "Please respond in Japanese except for the user name. "
+                     + "Should include the python code you executed in your response. "
+                     + f"The current date and time is: {datetime.now().strftime("%x %X")}. "
     )
 
     while True:
@@ -149,3 +179,15 @@ def chat_service(thread_id, user_id, message):
             time.sleep(5)
 
     return {"message": result, "file_id": file_id}
+
+
+@app.on_event("shutdown")
+def shutdown_event():
+    for user_id in user_database:
+        thread_id = user_database[user_id]
+        logger.info(client.beta.threads.delete(thread_id))
+        logger.info(f"Thread {thread_id} deleted.")
+
+    client.beta.assistants.delete(assistant.id)
+    logger.info(f"Assistant {assistant.id} deleted.")
+    logger.info("Shutdown completed.")

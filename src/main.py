@@ -1,12 +1,16 @@
+import json
 import os
 import time
 import tomllib
+import uuid
 from datetime import datetime
 from logging import getLogger
 from typing import Annotated
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Response, File, Form, HTTPException
+from fastapi import FastAPI, File, Form, HTTPException, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse, FileResponse
 from openai import AzureOpenAI
 
 logger = getLogger("uvicorn.app")
@@ -14,6 +18,16 @@ logger = getLogger("uvicorn.app")
 load_dotenv()
 
 app = FastAPI()
+
+origins = ["http://localhost:3000"]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 api_endpoint = os.getenv("OPENAI_URI")
 api_key = os.getenv("OPENAI_KEY")
@@ -51,10 +65,16 @@ user_database = {}
 @app.post("/chat")
 def chat(
         message: Annotated[str, Form()],
-        user_id: Annotated[str, Form()]
+        user_id: Annotated[str, Form()],
+        is_first: Annotated[bool, Form()],
 ):
     # If the user_id is not in the database, create a new thread
     if user_id not in user_database:
+        user_database[user_id] = client.beta.threads.create().id
+    # If the user_id is in the database and is the first message,
+    # delete the thread and create a new thread
+    elif is_first and user_id in user_database:
+        client.beta.threads.delete(user_database[user_id])
         user_database[user_id] = client.beta.threads.create().id
 
     thread_id = user_database[user_id]
@@ -64,7 +84,9 @@ def chat(
         role="user",
         content=message)
 
-    return chat_service(thread_id, user_id, message)
+    content = chat_service(thread_id, user_id, message)
+
+    return StreamingResponse(content, media_type="text/event-stream")
 
 
 @app.post("/chat-with-file")
@@ -72,6 +94,7 @@ def chat_with_file(
         file: Annotated[bytes, File()],
         message: Annotated[str, Form()],
         user_id: Annotated[str, Form()],
+        is_first: Annotated[bool, Form()],
 ):
     upload_file = client.files.create(
         file=file,
@@ -79,7 +102,12 @@ def chat_with_file(
     )
 
     # If the user_id is not in the database, create a new thread
-    if user_id not in user_database:
+    if user_id not in user_database :
+        user_database[user_id] = client.beta.threads.create().id
+    # If the user_id is in the database and is the first message,
+    # delete the thread and create a new thread
+    elif is_first:
+        client.beta.threads.delete(user_database[user_id])
         user_database[user_id] = client.beta.threads.create().id
 
     thread_id = user_database[user_id]
@@ -89,7 +117,9 @@ def chat_with_file(
         content=message,
         file_ids=[upload_file.id])
 
-    return chat_service(thread_id, user_id, message)
+    content = chat_service(thread_id, user_id, message)
+
+    return StreamingResponse(content, media_type="text/event-stream")
 
 
 @app.get("/download/{file_id}")
@@ -100,32 +130,16 @@ def download_file(
         write_file_data = client.files.content(file_id)
         file_data_bytes = write_file_data.read()
         # ファイルを返す
-        return Response(content=file_data_bytes)
+        return StreamingResponse([file_data_bytes], media_type="application/octet-stream")
     except Exception as e:
         # エラーが発生した場合500エラーを返す
         logger.error(e)
         raise HTTPException(status_code=500, detail="Undefined error")
 
 
-@app.delete("/delete/{user_id}")
-def delete_session(
-        user_id: str,
-):
-    thread_id = user_database[user_id]
-
-    # If the user_id is not in the database, create a new thread
-    try:
-        logger.info(client.beta.threads.delete(thread_id))
-        result = "Thread deleted."
-        if user_id in user_database:
-            user_database.pop(user_id)
-        else:
-            logger.info("Thread not found in database.")
-    except Exception as e:
-        logger.error(e)
-        result = "Failed to delete thread."
-
-    return {"message": result}
+def background_task(temp: str):
+    if os.path.exists(temp):
+        os.remove(temp)
 
 
 def chat_service(thread_id, user_id, message):
@@ -157,9 +171,7 @@ def chat_service(thread_id, user_id, message):
                 file_id = None
             break
         if run.status == "failed":
-            messages = client.beta.threads.messages.list(thread_id=thread_id)
-            answer = messages.data[0].content[0].text.value
-            result = f"Failed User:\n{message}\nAssistant:\n{answer}\n"
+            result = f"Failed. Please try again."
             file_id = None
             break
         if run.status == "expired":
@@ -178,7 +190,14 @@ def chat_service(thread_id, user_id, message):
         else:
             time.sleep(5)
 
-    return {"message": result, "file_id": file_id}
+    content = [
+        f"data: {json.dumps({"message": result})}\n",
+    ]
+
+    if file_id is not None:
+        content.append(f"data: {json.dumps({'file_id': file_id})}\n")
+
+    return content
 
 
 @app.on_event("shutdown")

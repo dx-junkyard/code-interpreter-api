@@ -73,12 +73,15 @@ def chat_service(
         else:
             time.sleep(5)
 
+    obj = json.dumps({"message": result})
+
     content = [
-        f"data: {json.dumps({"message": result})}\n",
+        f"data: {obj}\n",
     ]
 
     if file_id is not None:
+        obj = json.dumps({'file_id': file_id})
         upsert_file(user_id, file_id, azure_open_ai_client.files.content(file_id).read())
-        content.append(f"data: {json.dumps({'file_id': file_id})}\n")
+        content.append(f"data: {obj}\n")
 
     return content

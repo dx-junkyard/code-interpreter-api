@@ -130,7 +130,8 @@ def run_file(
 
     upsert_file(user_id, filename, output_binary)
 
-    content.append(f"data: {json.dumps({'file_id': filename})}\n")
+    obj = json.dumps({'file_id': filename})
+    content.append(f"data: {obj}\n")
 
     background_tasks.add_task(background_task, thread_id, filename)
 
